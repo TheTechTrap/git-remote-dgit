@@ -11,14 +11,7 @@ import DGitHelper from "./lib/dgit.js";
 import LineHelper from "./lib/line.js";
 import Arweave from "arweave";
 import { Arweave as ArweaveUtils } from "@thetechtrap/dgit";
-
-const GIT_DIR = path.resolve(
-  process.env.GIT_DIR ||
-    child_process
-      .spawnSync("git", ["rev-parse", "--git-dir"])
-      .stdout.toString()
-      .replace("\n", "")
-);
+import child_process from "child_process";
 
 const _timeout = async (duration) => {
   return new Promise((resolve, reject) => {
@@ -55,7 +48,7 @@ export default class Helper {
     this.url = url;
     // address and path shortcuts
     this.address = this.url.split("://")[1];
-    this.path = path.resolve(process.env.GIT_DIR || "");
+    this.path = path.resolve(process.env.GIT_DIR);
     // config
     this.config = this._config();
     // lib
@@ -67,23 +60,32 @@ export default class Helper {
 
   // OK
   async initialize() {
+    console.error(this.path);
     // create dirs
-    fs.ensureDirSync(path.join(this.path, "refs", "remotes", this.name));
-    fs.ensureDirSync(path.join(this.path, "dgit", "refs"));
+    try {
+      fs.ensureDirSync(this.path);
+      fs.ensureDirSync(path.join(this.path, "dgit", "refs"));
+      fs.ensureDirSync(path.join(this.path, "dgit", "refs", this.name));
+    } catch (err) {
+      console.error(err);
+    }
     // load db
-    this._db = Level(path.join(this.path, "dgit", "refs", this.address));
+    this._db = Level(path.join(this.path, "dgit", "refs", this.name));
+    console.error("1");
     this._arweave = Arweave.init({
       host: "arweave.net",
       port: 443,
       protocol: "https",
     });
+    console.error("def");
   }
 
   // OK
   async run() {
+    console.error("run");
     while (true) {
       const cmd = await this.line.next();
-      console.log(cmd);
+      console.error(cmd, "run");
       switch (this._cmd(cmd)) {
         case "capabilities":
           await this._handleCapabilities();
@@ -111,10 +113,13 @@ export default class Helper {
 
   async _handleConnect(line) {
     this.debug("cmd", line);
-
-    const protocol = line.trim();
-    if (protocol === "git-upload-pack") await this._gitUploadPack();
-    else if (protocol === "git-receive-pack") await this._gitReceivePack();
+    console.error("here", line);
+    const protocol = line.split(" ")[1];
+    console.error(protocol);
+    if (protocol === "git-upload-pack") {
+      console.error("here");
+      await this._gitUploadPack();
+    } else if (protocol === "git-receive-pack") await this._gitReceivePack();
   }
 
   // OK
@@ -216,7 +221,36 @@ export default class Helper {
 
   /***** core methods *****/
 
-  async _gitUploadPack() {}
+  async _gitUploadPack() {
+    console.error("here");
+    const packfiles = await ArweaveUtils.fetchPackfiles(
+      this._arweave,
+      this.url
+    );
+    // Write packfiles
+    await Promise.all(
+      packfiles.map(async (packfile) => {
+        const packfilePath = `objects/pack/${packfile.filename}`;
+        const fullpath = path.join(process.env.GIT_DIR, packfilePath);
+        const buf = Buffer.from(packfile.data);
+        console.error(packfile.data);
+        console.error(fullpath);
+        try {
+          await fs.writeFile(fullpath, buf);
+        } catch (err) {
+          console.error("here", err);
+        }
+        console.error("write done");
+        child_process.spawnSync("git", [
+          "index-pack",
+          "-o",
+          fullpath.replace(/\.pack$/, ".idx"),
+          fullpath,
+        ]);
+      })
+    );
+    process.stdout.write("\0");
+  }
 
   async _gitReceivePack() {
     const packfiles = await ArweaveUtils.fetchPackfiles(arweave, url);
@@ -389,10 +423,11 @@ export default class Helper {
 
   // OK
   _cmd(line) {
-    console.log(line);
+    console.error(line);
     if (line === "capabilities") {
       return "capabilities";
     } else if (line.startsWith("connect")) {
+      console.error("2");
       return "connect";
     } else if (line === "") {
       return "end";

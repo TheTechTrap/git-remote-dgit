@@ -3,6 +3,7 @@
 import Helper from "./helper.js";
 
 const main = async () => {
+  console.error(process.argv);
   const args = process.argv.slice(2);
 
   if (args.length < 2) {
@@ -13,8 +14,8 @@ const main = async () => {
 
   const name = args[0] === args[1] ? "_" : args[0];
   const url = args[1];
+  console.log(name);
   const helper = new Helper(name, url);
-
   helper
     .initialize()
     .then((_) => {

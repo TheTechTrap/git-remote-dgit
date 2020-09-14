@@ -9,6 +9,16 @@ import shell from "shelljs";
 import GitHelper from "./lib/git.js";
 import DGitHelper from "./lib/dgit.js";
 import LineHelper from "./lib/line.js";
+import Arweave from "arweave";
+import { Arweave as ArweaveUtils } from "@thetechtrap/dgit";
+
+const GIT_DIR = path.resolve(
+  process.env.GIT_DIR ||
+    child_process
+      .spawnSync("git", ["rev-parse", "--git-dir"])
+      .stdout.toString()
+      .replace("\n", "")
+);
 
 const _timeout = async (duration) => {
   return new Promise((resolve, reject) => {
@@ -62,6 +72,11 @@ export default class Helper {
     fs.ensureDirSync(path.join(this.path, "dgit", "refs"));
     // load db
     this._db = Level(path.join(this.path, "dgit", "refs", this.address));
+    this._arweave = Arweave.init({
+      host: "arweave.net",
+      port: 443,
+      protocol: "https",
+    });
   }
 
   // OK
@@ -73,17 +88,8 @@ export default class Helper {
         case "capabilities":
           await this._handleCapabilities();
           break;
-        case "list for-push":
-          await this._handleList({ forPush: true });
-          break;
-        case "list":
-          await this._handleList();
-          break;
-        case "fetch":
-          await this._handleFetch(cmd);
-          break;
-        case "push":
-          await this._handlePush(cmd);
+        case "connect":
+          await this._handleConnect(cmd);
           break;
         case "end":
           this._exit();
@@ -99,40 +105,16 @@ export default class Helper {
   async _handleCapabilities() {
     this.debug("cmd", "capabilities");
     // this._send('option')
-    this._send("fetch");
-    this._send("push");
+    this._send("connect");
     this._send("");
   }
 
-  // OK
-  async _handleList({ forPush = false }) {
-    forPush ? this.debug("cmd", "list", "for-push") : this.debug("cmd, list");
-
-    const refs = await this._fetchRefs();
-
-    // tslint:disable-next-line:forin
-    for (const ref in refs) {
-      this._send(this.dgit.cidToSha(refs[ref]) + " " + ref);
-    }
-
-    // force HEAD to master and update once dgit handle symbolic refs
-    this._send("@refs/heads/master" + " " + "HEAD");
-    this._send("");
-  }
-
-  // OK
-  async _handleFetch(line) {
+  async _handleConnect(line) {
     this.debug("cmd", line);
 
-    while (true) {
-      const [cmd, oid, name] = line.split(" ");
-      await this._fetch(oid, name);
-      line = await this.line.next();
-
-      if (line === "") break;
-    }
-
-    this._send("");
+    const protocol = line.trim();
+    if (protocol === "git-upload-pack") await this._gitUploadPack();
+    else if (protocol === "git-receive-pack") await this._gitReceivePack();
   }
 
   // OK
@@ -183,14 +165,11 @@ export default class Helper {
 
     try {
       // get refs from dgit node
-      //   events = await this._repo.contract.getPastEvents("UpdateRef", {
-      //     fromBlock: start,
-      //     toBlock: "latest",
-      //   });
-      events = [{ ref: "", hash: "" }];
+      events = getRefsOnArweave(this._arweave, this.url);
 
       for (const event of events) {
-        updates[event.ref] = event.hash;
+        console.log(event);
+        // updates[event] = event.oid;
       }
 
       // tslint:disable-next-line:forin
@@ -236,6 +215,26 @@ export default class Helper {
   }
 
   /***** core methods *****/
+
+  async _gitUploadPack() {}
+
+  async _gitReceivePack() {
+    const packfiles = await ArweaveUtils.fetchPackfiles(arweave, url);
+    // Write packfiles
+    await Promise.all(
+      packfiles.map(async (packfile) => {
+        const packfilePath = `objects/pack/${packfile.filename}`;
+        const fullpath = join(gitdir, packfilePath);
+        const buf = Buffer.from(packfile.data);
+        await fs.write(fullpath, buf);
+        child_process.spawnSync("git", [
+          "-o",
+          fullpath.replace(/\.pack$/, ".idx"),
+          fullpath,
+        ]);
+      })
+    );
+  }
 
   // OK
   async _fetch(oid, ref) {
@@ -393,16 +392,8 @@ export default class Helper {
     console.log(line);
     if (line === "capabilities") {
       return "capabilities";
-    } else if (line === "list for-push") {
-      return "list for-push";
-    } else if (line === "list") {
-      return "list";
-    } else if (line.startsWith("option")) {
-      return "option";
-    } else if (line.startsWith("fetch")) {
-      return "fetch";
-    } else if (line.startsWith("push")) {
-      return "push";
+    } else if (line.startsWith("connect")) {
+      return "connect";
     } else if (line === "") {
       return "end";
     } else {
